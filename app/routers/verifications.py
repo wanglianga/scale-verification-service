@@ -147,6 +147,20 @@ def evaluate_verification(
     return result
 
 
+@router.get("/{verification_id}/evaluate/multi-point", response_model=schemas.MultiPointEvaluationResponse)
+def evaluate_multi_point_verification(
+    verification_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    db_verification = crud_verification.get_verification(db, verification_id=verification_id)
+    if not db_verification:
+        raise HTTPException(status_code=404, detail="Verification not found")
+    
+    result = crud_verification.evaluate_multi_point_verification(db, verification_id)
+    return result
+
+
 @router.post("/{verification_id}/finalize")
 def finalize_verification(
     verification_id: int,

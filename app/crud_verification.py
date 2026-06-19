@@ -1,7 +1,13 @@
 from sqlalchemy.orm import Session
 from app import models, schemas
-from app.utils import generate_no, calculate_error, calculate_error_percentage, calculate_tolerance, is_within_tolerance
-from datetime import date
+from app.utils import (
+    generate_no, calculate_error, calculate_error_percentage,
+    calculate_tolerance, is_within_tolerance, determine_over_tolerance_level,
+    calculate_over_tolerance_ratio, is_adjustment_allowed,
+    get_adjustment_deadline_days, get_reinspection_deadline_days,
+    generate_rectification_suggestions, determine_reinspection_load_points
+)
+from datetime import date, datetime
 from typing import Optional, List
 
 
@@ -78,6 +84,7 @@ def create_verification_reading(
     error_pct = calculate_error_percentage(reading.nominal_weight, error)
     tolerance = calculate_tolerance(reading.nominal_weight, accuracy_class)
     within_tol = is_within_tolerance(error, tolerance)
+    ot_level = determine_over_tolerance_level(error, tolerance)
 
     db_reading = models.VerificationReading(
         **reading.model_dump(),
@@ -86,6 +93,7 @@ def create_verification_reading(
         error_percentage=error_pct,
         tolerance=tolerance,
         is_within_tolerance=within_tol,
+        over_tolerance_level=ot_level,
     )
     db.add(db_reading)
     db.flush()
@@ -128,6 +136,7 @@ def update_verification_reading(
         db_reading.error_percentage = calculate_error_percentage(db_reading.nominal_weight, db_reading.error)
         db_reading.tolerance = calculate_tolerance(db_reading.nominal_weight, accuracy_class)
         db_reading.is_within_tolerance = is_within_tolerance(db_reading.error, db_reading.tolerance)
+        db_reading.over_tolerance_level = determine_over_tolerance_level(db_reading.error, db_reading.tolerance)
     
     db.commit()
     db.refresh(db_reading)
@@ -175,6 +184,115 @@ def evaluate_verification_result(
     }
 
 
+def evaluate_multi_point_verification(
+    db: Session, verification_id: int
+) -> dict:
+    db_verification = get_verification(db, verification_id)
+    if not db_verification:
+        return {}
+    
+    readings = db_verification.readings
+    scale = db_verification.scale
+    accuracy_class = scale.accuracy_class if scale and scale.accuracy_class else "III"
+    
+    if not readings:
+        return {
+            "verification_id": verification_id,
+            "verification_no": db_verification.verification_no,
+            "scale_id": db_verification.scale_id,
+            "accuracy_class": accuracy_class,
+            "total_readings": 0,
+            "passed_readings": 0,
+            "failed_readings": 0,
+            "max_error": 0,
+            "max_error_percentage": 0,
+            "overall_pass": False,
+            "seal_check": db_verification.seal_intact,
+            "worst_over_tolerance_level": models.OverToleranceLevel.NONE,
+            "failed_readings_detail": [],
+            "allow_adjustment": False,
+            "adjustment_deadline_days": 0,
+            "reinspection_deadline_days": 0,
+            "rectification_suggestions": ["无检定读数数据，请先录入各砝码点读数"],
+            "reinspection_required_load_points": [],
+        }
+    
+    total = len(readings)
+    passed = sum(1 for r in readings if r.is_within_tolerance)
+    failed = total - passed
+    max_error = max(abs(r.error) for r in readings) if readings else 0
+    max_error_pct = max(abs(r.error_percentage) for r in readings) if readings else 0
+    
+    failed_readings = [r for r in readings if not r.is_within_tolerance]
+    
+    level_priority = {
+        models.OverToleranceLevel.NONE: 0,
+        models.OverToleranceLevel.SLIGHT: 1,
+        models.OverToleranceLevel.MODERATE: 2,
+        models.OverToleranceLevel.SEVERE: 3,
+    }
+    worst_level = models.OverToleranceLevel.NONE
+    if failed_readings:
+        worst_level = max(
+            (r.over_tolerance_level for r in failed_readings),
+            key=lambda l: level_priority.get(l, 0)
+        )
+    
+    failed_details = []
+    for r in failed_readings:
+        failed_details.append({
+            "reading_id": r.id,
+            "load_point": r.load_point,
+            "nominal_weight": r.nominal_weight,
+            "indication_value": r.indication_value,
+            "error": r.error,
+            "error_percentage": r.error_percentage,
+            "tolerance": r.tolerance,
+            "over_tolerance_level": r.over_tolerance_level,
+            "over_tolerance_ratio": calculate_over_tolerance_ratio(r.error, r.tolerance),
+        })
+    
+    overall_pass = (
+        failed == 0 and 
+        (db_verification.seal_intact is None or db_verification.seal_intact)
+    )
+    
+    allow_adj = is_adjustment_allowed(worst_level, failed, total)
+    adj_days = get_adjustment_deadline_days(worst_level) if worst_level != models.OverToleranceLevel.NONE else 0
+    reinsp_days = get_reinspection_deadline_days(accuracy_class, worst_level)
+    
+    suggestions = generate_rectification_suggestions(
+        worst_level, failed_details,
+        db_verification.seal_intact if db_verification.seal_intact is not None else True,
+        accuracy_class
+    )
+    if not failed_details:
+        suggestions = ["所有检定读数均在允许误差范围内，衡器计量性能合格"]
+    
+    reinsp_points = determine_reinspection_load_points(failed_details)
+    
+    return {
+        "verification_id": verification_id,
+        "verification_no": db_verification.verification_no,
+        "scale_id": db_verification.scale_id,
+        "accuracy_class": accuracy_class,
+        "total_readings": total,
+        "passed_readings": passed,
+        "failed_readings": failed,
+        "max_error": max_error,
+        "max_error_percentage": max_error_pct,
+        "overall_pass": overall_pass,
+        "seal_check": db_verification.seal_intact,
+        "worst_over_tolerance_level": worst_level,
+        "failed_readings_detail": failed_details,
+        "allow_adjustment": allow_adj,
+        "adjustment_deadline_days": adj_days,
+        "reinspection_deadline_days": reinsp_days,
+        "rectification_suggestions": suggestions,
+        "reinspection_required_load_points": reinsp_points,
+    }
+
+
 def get_label(db: Session, label_id: int) -> Optional[models.VerificationLabel]:
     return db.query(models.VerificationLabel).filter(models.VerificationLabel.id == label_id).first()
 
@@ -197,7 +315,9 @@ def get_labels(
 
 def create_label(
     db: Session, label: schemas.VerificationLabelCreate,
-    issued_by: int = None
+    issued_by: int = None,
+    void_reason_category: models.VoidReason = models.VoidReason.OTHER,
+    void_old_reason: str = None
 ) -> models.VerificationLabel:
     label_number = generate_no("LBL")
     
@@ -205,7 +325,22 @@ def create_label(
         expiry = date.today().replace(year=date.today().year + 1)
     else:
         expiry = label.expiry_date
-    
+
+    existing_active = get_labels(db, scale_id=label.scale_id, status=models.LabelStatus.ACTIVE)
+
+    voided_labels = []
+    for old_label in existing_active:
+        reason_text = void_old_reason or "签发新标签，旧标签自动作废"
+        voided = void_label_internal(
+            db,
+            label_id=old_label.id,
+            void_reason_category=void_reason_category,
+            void_reason=reason_text,
+            void_by=issued_by
+        )
+        if voided:
+            voided_labels.append(voided)
+
     db_label = models.VerificationLabel(
         **label.model_dump(),
         label_number=label_number,
@@ -215,19 +350,59 @@ def create_label(
     db.add(db_label)
     db.commit()
     db.refresh(db_label)
+    
+    db_label._voided_old_labels = voided_labels
+    
     return db_label
 
 
-def void_label(
-    db: Session, label_id: int, void_reason: str, void_by: int
+def void_label_internal(
+    db: Session, label_id: int,
+    void_reason_category: models.VoidReason,
+    void_reason: str, void_by: int
 ) -> Optional[models.VerificationLabel]:
     db_label = get_label(db, label_id)
     if not db_label:
         return None
     db_label.status = models.LabelStatus.VOID
+    db_label.void_reason_category = void_reason_category
     db_label.void_reason = void_reason
     db_label.void_date = date.today()
+    db_label.void_time = datetime.utcnow()
     db_label.void_by = void_by
+    db.flush()
+    return db_label
+
+
+def void_label(
+    db: Session, label_id: int,
+    void_reason_category: models.VoidReason,
+    void_reason: str, void_by: int,
+    notify_regulator: bool = False,
+    regulator_notifier_id: int = None
+) -> Optional[models.VerificationLabel]:
+    db_label = void_label_internal(db, label_id, void_reason_category, void_reason, void_by)
+    if not db_label:
+        return None
+    if notify_regulator:
+        db_label.regulator_notified = True
+        db_label.regulator_notified_time = datetime.utcnow()
+        db_label.regulator_notified_by = regulator_notifier_id or void_by
+    db.commit()
+    db.refresh(db_label)
+    return db_label
+
+
+def mark_label_regulator_notified(
+    db: Session, label_id: int,
+    notified_by: int
+) -> Optional[models.VerificationLabel]:
+    db_label = get_label(db, label_id)
+    if not db_label:
+        return None
+    db_label.regulator_notified = True
+    db_label.regulator_notified_time = datetime.utcnow()
+    db_label.regulator_notified_by = notified_by
     db.commit()
     db.refresh(db_label)
     return db_label

@@ -205,6 +205,37 @@ API 文档地址：http://localhost:8000/docs
 | 监管抽查 | /inspections | 抽查记录、追溯查询 |
 | 操作日志 | /operation-logs | 操作审计日志 |
 
+## 新增/扩展 API 说明
+
+### 多点读数判定
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | /verifications/{id}/evaluate/multi-point | 多点读数详细判定，返回超差档位、是否允许调校、复检期限、整改建议 |
+
+**响应字段说明：**
+- `worst_over_tolerance_level`: 最严重超差档位（none/slight/moderate/severe）
+- `failed_readings_detail`: 超差点详情列表（含超差倍率）
+- `allow_adjustment`: 是否允许调校（严重超差或超差率>50%时为 false）
+- `adjustment_deadline_days`: 建议调校期限天数
+- `reinspection_deadline_days`: 建议复检期限天数
+- `rectification_suggestions`: 智能生成的整改建议列表
+- `reinspection_required_load_points`: 建议复检的载荷点
+
+### 标签签发约束
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | /labels | 签发标签，如该秤已有有效标签则自动作废（可传入作废原因分类） |
+| POST | /labels/{id}/void | 手动作废标签，需传入作废原因分类、详细原因、是否通知监管 |
+| POST | /labels/{id}/notify-regulator | 补记"已通知监管人员"状态 |
+| GET | /labels/scale/{id}/active | 查询某秤当前有效标签及数量 |
+
+**标签状态约束：**
+- 同一 `scale_id` 始终最多只有 1 个 `ACTIVE` 状态标签
+- 签发新标签自动将旧标签置为 `VOID`，并记录完整作废链路
+- 作废标签后可标记是否已通知监管人员
+
 ## 目录结构
 
 ```

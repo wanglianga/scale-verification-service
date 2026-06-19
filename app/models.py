@@ -52,6 +52,20 @@ class LabelStatus(str, enum.Enum):
     LOST = "lost"
 
 
+class OverToleranceLevel(str, enum.Enum):
+    NONE = "none"
+    SLIGHT = "slight"
+    MODERATE = "moderate"
+    SEVERE = "severe"
+
+
+class VoidReason(str, enum.Enum):
+    DUPLICATE_APPLICATION = "duplicate_application"
+    VERIFIER_MISTAKE = "verifier_mistake"
+    RECTIFICATION_REINSPECTION = "rectification_reinspection"
+    OTHER = "other"
+
+
 class InspectionType(str, enum.Enum):
     ROUTINE = "routine"
     COMPLAINT = "complaint"
@@ -222,6 +236,7 @@ class VerificationReading(Base):
     error_percentage = Column(Float)
     tolerance = Column(Float)
     is_within_tolerance = Column(Boolean)
+    over_tolerance_level = Column(Enum(OverToleranceLevel), default=OverToleranceLevel.NONE)
     weighing_direction = Column(String(20))
     sequence = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -241,9 +256,14 @@ class VerificationLabel(Base):
     issue_date = Column(Date, default=date.today)
     expiry_date = Column(Date)
     issued_by = Column(Integer, ForeignKey("users.id"))
+    void_reason_category = Column(Enum(VoidReason))
     void_reason = Column(String(500))
     void_date = Column(Date)
+    void_time = Column(DateTime)
     void_by = Column(Integer, ForeignKey("users.id"))
+    regulator_notified = Column(Boolean, default=False)
+    regulator_notified_time = Column(DateTime)
+    regulator_notified_by = Column(Integer, ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     remarks = Column(Text)

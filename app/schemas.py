@@ -3,7 +3,8 @@ from typing import Optional, List
 from pydantic import BaseModel, EmailStr
 from app.models import (
     UserRole, ScaleStatus, AppointmentType, AppointmentStatus,
-    VerificationStatus, LabelStatus, InspectionType, OperationType
+    VerificationStatus, LabelStatus, InspectionType, OperationType,
+    OverToleranceLevel, VoidReason
 )
 
 
@@ -237,6 +238,7 @@ class VerificationReadingResponse(VerificationReadingBase):
     error_percentage: Optional[float] = None
     tolerance: Optional[float] = None
     is_within_tolerance: Optional[bool] = None
+    over_tolerance_level: Optional[OverToleranceLevel] = None
     created_at: datetime
 
     class Config:
@@ -306,14 +308,25 @@ class VerificationLabelResponse(VerificationLabelBase):
     status: LabelStatus
     issue_date: date
     issued_by: Optional[int] = None
+    void_reason_category: Optional[VoidReason] = None
     void_reason: Optional[str] = None
     void_date: Optional[date] = None
+    void_time: Optional[datetime] = None
     void_by: Optional[int] = None
+    regulator_notified: Optional[bool] = None
+    regulator_notified_time: Optional[datetime] = None
+    regulator_notified_by: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class LabelVoidRequest(BaseModel):
+    void_reason_category: VoidReason
+    void_reason: str
+    notify_regulator: Optional[bool] = False
 
 
 class RectificationBase(BaseModel):
@@ -414,3 +427,36 @@ class PaginatedResponse(BaseModel):
 class VerificationVerdictRequest(BaseModel):
     final_verdict: str
     verdict_reason: str
+
+
+class FailedReadingDetail(BaseModel):
+    reading_id: int
+    load_point: Optional[str] = None
+    nominal_weight: float
+    indication_value: float
+    error: float
+    error_percentage: float
+    tolerance: float
+    over_tolerance_level: OverToleranceLevel
+    over_tolerance_ratio: float
+
+
+class MultiPointEvaluationResponse(BaseModel):
+    verification_id: int
+    verification_no: str
+    scale_id: int
+    accuracy_class: Optional[str] = None
+    total_readings: int
+    passed_readings: int
+    failed_readings: int
+    max_error: float
+    max_error_percentage: float
+    overall_pass: bool
+    seal_check: Optional[bool] = None
+    worst_over_tolerance_level: OverToleranceLevel
+    failed_readings_detail: List[FailedReadingDetail] = []
+    allow_adjustment: bool
+    adjustment_deadline_days: int
+    reinspection_deadline_days: int
+    rectification_suggestions: List[str] = []
+    reinspection_required_load_points: List[str] = []
